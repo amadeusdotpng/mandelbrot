@@ -16,31 +16,25 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     return out;
 }
 
-struct Complex {
-    real: f32,
-    imag: f32,
-}
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var z: Complex;
-    z.real = 0.0;
-    z.imag = 0.0;
+    var z = vec2<f32>(0.0, 0.0);
+    let c = vec2<f32>(
+        in.coords.x * 2 - 0.5,
+        in.coords.y * 2
+    );
 
-    var c: Complex;
-    c.real = in.coords.x * 2 - 0.5;
-    c.imag = in.coords.y * 2;
-
-    var lim = 500;
+    var lim = 5000;
     for(var i = 0; i < lim; i++) {
-        var z_prime: Complex;
-        z_prime.real = (z.real * z.real - z.imag * z.imag) + c.real;
-        z_prime.imag = (2 * z.real * z.imag) + c.imag;
+        let z_prime = vec2<f32>(
+            (z.x * z.x - z.y * z.y) + c.x,
+            (2 * z.x * z.y) + c.y,
+        );
 
-        z = z_prime;
-        if(sqrt(z.real*z.real + z.imag*z.imag) >= 2) {
+        if(z_prime.x*z_prime.x + z_prime.y*z_prime.y >= 4) {
             return vec4<f32>(vec3<f32>(f32(i) / f32(lim)), 1.0);
         }
+        z = z_prime;
     }
     return vec4<f32>(vec3<f32>(0.0), 1.0);
 }
