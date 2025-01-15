@@ -1,3 +1,5 @@
+mod camera;
+
 use winit::{
     event::*,
     event_loop::EventLoop,
@@ -6,6 +8,7 @@ use winit::{
 };
 
 use wgpu::util::DeviceExt;
+use camera::{Camera, CameraUniform};
 
 struct Renderer<'a> {
     surface: wgpu::Surface<'a>,
@@ -14,10 +17,16 @@ struct Renderer<'a> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
 
-    render_pipeline: wgpu::RenderPipeline,
+    camera: Camera,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
 
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+
+    render_pipeline: wgpu::RenderPipeline,
+
+    staging_buffer: wgpu::util::StagingBelt,
 
     window: &'a Window,
 }
@@ -81,11 +90,68 @@ impl<'a> Renderer<'a> {
             desired_maximum_frame_latency: 2,
         };
 
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            }
+        );
+
+        let index_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: wgpu::BufferUsages::INDEX,
+            }
+        );
+
+        let camera = Camera::default();
+        let camera_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera.into_matrix()]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+
+        let camera_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Camera Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }
+                ],
+            }
+        );
+
+        let camera_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("Camera Bind Group"),
+                layout: &camera_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_buffer.as_entire_binding(),
+                    }
+                ],
+            }
+        );
 
         let pipeline_layout = device.create_pipeline_layout(
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[
+                    &camera_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             }
         );
@@ -142,21 +208,7 @@ impl<'a> Renderer<'a> {
         );
 
 
-        let vertex_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(VERTICES),
-                usage: wgpu::BufferUsages::VERTEX,
-            }
-        );
-
-        let index_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(INDICES),
-                usage: wgpu::BufferUsages::INDEX,
-            }
-        );
+        let staging_belt = wgpu::util::StagingBelt::new((std::mem::size_of::<CameraUniform>() + 4) as wgpu::BufferAddress);
 
         Self {
             surface,
@@ -164,11 +216,16 @@ impl<'a> Renderer<'a> {
             device,
             queue,
             config,
-
             render_pipeline,
+
+            camera,
+            camera_buffer,
+            camera_bind_group,
 
             vertex_buffer,
             index_buffer,
+
+            staging_buffer: staging_belt,
 
             window,
         }
@@ -185,6 +242,34 @@ impl<'a> Renderer<'a> {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
         }
+    }
+
+    fn update(&mut self) {
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+                label: Some("Update Encoder"),
+            }
+        );
+
+        use std::num::NonZero;
+        self.staging_buffer
+            .write_buffer(
+                &mut encoder,
+                &self.camera_buffer,
+                0,
+                NonZero::new(self.camera_buffer.size() as wgpu::BufferAddress).unwrap(),
+                &self.device
+            ).copy_from_slice(bytemuck::cast_slice(&[self.camera.into_matrix()]));
+
+        self.staging_buffer.finish();
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.staging_buffer.recall();
+    }
+
+    fn input(&mut self, event: &WindowEvent) -> bool {
+        self.camera.process_events(event)
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError>{
@@ -220,6 +305,7 @@ impl<'a> Renderer<'a> {
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
         render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
 
@@ -244,7 +330,9 @@ pub async fn run() {
     let _ = event_loop.run(move |event, control_flow| {
         if let Event::WindowEvent { window_id, ref event } = event {
             if window_id != renderer.window().id() { return }
+            if renderer.input(event) { return }
 
+            renderer.update();
             match event {
                 WindowEvent::CloseRequested
                 | WindowEvent::KeyboardInput { 

@@ -7,6 +7,7 @@ struct VertexOutput {
     @location(0) coords: vec2<f32>,
 }
 
+
 @vertex
 fn vs_main(vertex: VertexInput) -> VertexOutput {
     var out: VertexOutput;
@@ -16,15 +17,18 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     return out;
 }
 
+struct CameraUniform {
+    view_mat: mat3x3<f32>
+}
+@group(0) @binding(0)
+var<uniform> camera: CameraUniform;
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var z = vec2<f32>(0.0, 0.0);
-    let c = vec2<f32>(
-        in.coords.x * 2 - 0.5,
-        in.coords.y * 2
-    );
+    let c = camera.view_mat * vec3<f32>(in.coords, 1.0);
 
-    var lim = 5000;
+    var lim = 1000;
     for(var i = 0; i < lim; i++) {
         let z_prime = vec2<f32>(
             (z.x * z.x - z.y * z.y) + c.x,
